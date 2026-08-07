@@ -47,9 +47,11 @@ def listar_tarefas(page: int = 1, per_page: int = 10, credentials: HTTPBasicCred
     start = (page - 1) * per_page
     end = start + per_page
 
+    ordem_tarefas = sorted(tarefas.items(), key=lambda x: x[0])
+
     paginadastarefas = [
         {"id": id, "nome": tarefa_data["nome"], "descricao": tarefa_data["descricao"], "concluida": tarefa_data["concluida"]}
-        for id, tarefa_data in list(tarefas.items())[start:end]
+        for id, tarefa_data in ordem_tarefas[start:end]
     ]
 
     return {"tarefas": paginadastarefas, "total_tarefas": len(tarefas), "pagina_atual": page, "tarefas_por_pagina": per_page}
