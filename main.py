@@ -9,7 +9,7 @@ tarefas = {}
 class Tarefa(BaseModel):
     nome: str
     descricao: str
-    concluida: str = "não concluída"
+    concluida: bool = False
 
 
 @app.post("/adiciona")
