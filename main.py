@@ -37,7 +37,7 @@ class TarefaDB(Base):
 class Tarefas(BaseModel):
     nome: str
     descricao: str
-    concluida: int
+    concluida: bool = False
 
 Base.metadata.create_all(bind=engine)
 
