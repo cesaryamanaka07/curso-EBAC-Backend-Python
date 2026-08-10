@@ -2,6 +2,20 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 from typing import Optional
+from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, Session
+import secrets
+
+
+# Caso seja online, apontar para um banco de dados.
+DATABASE_URL = "sqlite:///./tarefas.db"
+
+# Configuração do SQLAlchemy Local
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
 
 app = FastAPI()
 
@@ -10,12 +24,30 @@ SENHA = "admin"
 
 security = HTTPBasic()
 
-tarefas = {}
+dicionario_tarefas = {}
 
-class Tarefa(BaseModel):
+class TarefaDB(Base):
+    __tablename__ = "tarefas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, index=True)
+    descricao = Column(String, index=True)
+    concluida = Column(Integer)
+
+class Tarefas(BaseModel):
     nome: str
     descricao: str
-    concluida: bool = False
+    concluida: int
+
+Base.metadata.create_all(bind=engine)
+
+def sessao_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 def autenticar_usuario(credentials: HTTPBasicCredentials = Depends(security)):
     usuario_correto = secrets.compare_digest(credentials.username, USUARIO)
@@ -30,47 +62,56 @@ def autenticar_usuario(credentials: HTTPBasicCredentials = Depends(security)):
 
 
 @app.post("/adiciona")
-def adicionar_tarefa(id: int, Tarefa: Tarefa, credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
-    if id in tarefas:
-        raise HTTPException(status_code=400, detail="Já existe uma tarefa com este ID.")
-    else:
-        tarefas[id] = Tarefa.model_dump()
-        return {"mensagem": "Tarefa adicionada com sucesso!"}
+def adicionar_tarefa(tarefas: Tarefas, db: Session = Depends(sessao_db), credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
+    db_tarefa = db.query(TarefaDB).filter(TarefaDB.nome == tarefas.nome, TarefaDB.descricao == tarefas.descricao).first()
+    if db_tarefa:
+        raise HTTPException(status_code=400, detail="Tarefa já existe no banco de dados.")
+
+    nova_tarefa = TarefaDB(nome=tarefas.nome, descricao=tarefas.descricao, concluida=tarefas.concluida)
+    db.add(nova_tarefa)
+    db.commit()
+    db.refresh(nova_tarefa)
+    return {"mensagem": "Tarefa adicionada com sucesso!"}
+
 
     
 @app.get("/tarefas")
-def listar_tarefas(page: int = 1, per_page: int = 10, credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
+def listar_tarefas(page: int = 1, per_page: int = 10, db: Session = Depends(sessao_db), credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
     if page < 1 or per_page < 1:
         raise HTTPException(status_code=400, detail="Parâmetros de paginação inválidos.")
+
+    tarefas = db.query(TarefaDB).offset((page - 1) * per_page).limit(per_page).all()
+    
     if not tarefas:
         return {"mensagem": "Nenhuma tarefa encontrada."}
-    start = (page - 1) * per_page
-    end = start + per_page
+    
+    total_tarefas = db.query(TarefaDB).count()
 
-    ordem_tarefas = sorted(tarefas.items(), key=lambda x: x[0])
-
-    paginadastarefas = [
-        {"id": id, "nome": tarefa_data["nome"], "descricao": tarefa_data["descricao"], "concluida": tarefa_data["concluida"]}
-        for id, tarefa_data in ordem_tarefas[start:end]
-    ]
-
-    return {"tarefas": paginadastarefas, "total_tarefas": len(tarefas), "pagina_atual": page, "tarefas_por_pagina": per_page}
+    return {"tarefas": [{"id": tarefa.id, "nome": tarefa.nome, "descricao": tarefa.descricao, "concluida": tarefa.concluida} for tarefa in tarefas], "total_tarefas": total_tarefas, "pagina_atual": page, "tarefas_por_pagina": per_page}
 
     
 @app.put("/atualiza/{id}")
-def put_tarefa(id: int, Tarefa: Tarefa, credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
-    concluir_tarefa = tarefas.get(id)
-    if not concluir_tarefa:
+def put_tarefa(id: int, tarefas: Tarefas, db: Session = Depends(sessao_db),credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
+    tarefa_existente = db.query(TarefaDB).filter(TarefaDB.id == id).first()
+    if not tarefa_existente:
         raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
-    else:
-        tarefas[id] = Tarefa.model_dump()
-        return {"mensagem": "Tarefa atualizada com sucesso!"}
+    
+    tarefa_existente.nome = tarefas.nome
+    tarefa_existente.descricao = tarefas.descricao
+    tarefa_existente.concluida = tarefas.concluida
+
+    db.commit()
+    db.refresh(tarefa_existente)
+
+    return {"mensagem": "Tarefa atualizada com sucesso!"}
 
     
 @app.delete("/deletar/{id}")
-def remover_tarefa(id: int, credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
-    if id not in tarefas:
-        raise HTTPException(status_code=404, detail="Tarefa não encontrada.")
-    else:
-        del tarefas[id]
-        return {"mensagem": "Tarefa removida com sucesso!"}
+def remover_tarefa(id: int, db: Session = Depends(sessao_db), credentials: HTTPBasicCredentials = Depends(autenticar_usuario)):
+    tarefa_existente = db.query(TarefaDB).filter(TarefaDB.id == id).first()
+    if not tarefa_existente:
+        raise HTTPException(status_code=404, detail="Tarefa não encontrada no banco de dados.")
+
+    db.delete(tarefa_existente)
+    db.commit()
+    return {"mensagem": "Tarefa removida com sucesso!"}
